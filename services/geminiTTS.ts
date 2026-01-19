@@ -2,10 +2,21 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { decode } from "../utils/audioUtils";
 
-const API_KEY = process.env.API_KEY || '';
+/**
+ * Access API key safely from the environment.
+ * The platform typically injects this, but we fallback to an empty string to avoid crashes.
+ */
+const getApiKey = () => {
+  try {
+    // Check both standard process.env and window.process for maximum compatibility
+    return (typeof process !== 'undefined' ? process.env.API_KEY : (window as any).process?.env?.API_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+};
 
 /**
- * Detects language composition of the text
+ * Detects language composition of the text with higher precision
  */
 function getLanguageProfile(text: string) {
   const urduPattern = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
@@ -27,31 +38,39 @@ export async function generateSpeech(
   voiceName: string, 
   settings: { stability: number; similarity: number; styleExaggeration: number }
 ): Promise<Uint8Array> {
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI({ apiKey });
   const profile = getLanguageProfile(text);
   
-  // Sophisticated Prompt Engineering for Bilingual Scenarios
+  // Refined Prompt Engineering for Seamless Bilingual Storytelling
   let styleInstruction = "";
   
   if (profile.isBilingual) {
-    styleInstruction = "This text is bilingual (English and Urdu). Read the Urdu parts in a warm, traditional style and transition smoothly into clear, natural English for the English words. Maintain a consistent emotional tone across both languages. ";
+    styleInstruction = `
+      This text contains a mix of English and Urdu. 
+      Please perform a seamless bilingual narration:
+      1. For Urdu words, use a rich, traditional 'Dastangoi' tone with deep emotional resonance.
+      2. For English words, use a clear, modern, and natural accent.
+      3. Ensure the transitions between languages are smooth and do not sound robotic.
+      4. Maintain the overall narrative flow as if a single fluent bilingual speaker is telling a story.
+    `;
   } else if (profile.hasUrdu) {
-    styleInstruction = "Read this in a deep, traditional Urdu storytelling (Dastangoi) style. Focus on correct 'tahaffuz' (pronunciation) and emotional cadence. ";
-    if (settings.stability > 70) styleInstruction += "Use a steady, formal 'Zaban' (language) style. ";
-    else styleInstruction += "Use dramatic pauses and vocal variations common in classical Urdu narration. ";
+    styleInstruction = "Read this text in a classic Urdu storytelling style. Focus on the 'Urdu-ness' of the pronunciation (Tahaffuz), specifically the deep 'kh' and 'gh' sounds and the poetic rhythm. ";
+    if (settings.stability > 70) styleInstruction += "Keep the delivery formal and elegant. ";
+    else styleInstruction += "Add emotional gravity and dramatic pauses between sentences. ";
   } else {
     styleInstruction = settings.stability > 70 
-      ? "Read with professional, steady, and extremely clear English pronunciation. " 
-      : "Read with expressive, cinematic English storytelling variations. ";
+      ? "Deliver a professional, clear, and neutral English narration. " 
+      : "Deliver a highly expressive and cinematic English story performance. ";
   }
 
   if (settings.styleExaggeration > 50) {
-    styleInstruction += "Inject high levels of drama, passion, and theatrical flair into the performance. ";
+    styleInstruction += "Use extremely theatrical and high-energy vocal variations. ";
   }
 
-  const prompt = `${styleInstruction}
-  
-Text to synthesize: ${text}`;
+  const prompt = `${styleInstruction.trim()}
+
+Text to narrate: ${text}`;
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
@@ -68,7 +87,7 @@ Text to synthesize: ${text}`;
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   if (!base64Audio) {
-    throw new Error("No audio data received from Gemini API");
+    throw new Error("No audio data received from Gemini API. Ensure your API Key is correctly configured.");
   }
 
   return decode(base64Audio);
