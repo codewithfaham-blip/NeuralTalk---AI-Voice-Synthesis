@@ -5,11 +5,21 @@ import { decode } from "../utils/audioUtils";
 const API_KEY = process.env.API_KEY || '';
 
 /**
- * Detects if the string contains a significant amount of Urdu/Arabic characters
+ * Detects language composition of the text
  */
-function isUrduText(text: string): boolean {
+function getLanguageProfile(text: string) {
   const urduPattern = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
-  return urduPattern.test(text);
+  const englishPattern = /[a-zA-Z]/;
+  
+  const hasUrdu = urduPattern.test(text);
+  const hasEnglish = englishPattern.test(text);
+  
+  return {
+    hasUrdu,
+    hasEnglish,
+    isBilingual: hasUrdu && hasEnglish,
+    primary: hasUrdu ? 'Urdu' : 'English'
+  };
 }
 
 export async function generateSpeech(
@@ -18,28 +28,30 @@ export async function generateSpeech(
   settings: { stability: number; similarity: number; styleExaggeration: number }
 ): Promise<Uint8Array> {
   const ai = new GoogleGenAI({ apiKey: API_KEY });
+  const profile = getLanguageProfile(text);
   
-  const isUrdu = isUrduText(text);
-  
-  // Advanced Prompt Engineering for Storytelling
+  // Sophisticated Prompt Engineering for Bilingual Scenarios
   let styleInstruction = "";
   
-  if (isUrdu) {
-    styleInstruction = "Read this in a deep, traditional Urdu storytelling (Dastangoi) style. ";
-    if (settings.stability > 70) styleInstruction += "Use clear, formal pronunciation. ";
-    else styleInstruction += "Add emotional depth and natural dramatic pauses. ";
+  if (profile.isBilingual) {
+    styleInstruction = "This text is bilingual (English and Urdu). Read the Urdu parts in a warm, traditional style and transition smoothly into clear, natural English for the English words. Maintain a consistent emotional tone across both languages. ";
+  } else if (profile.hasUrdu) {
+    styleInstruction = "Read this in a deep, traditional Urdu storytelling (Dastangoi) style. Focus on correct 'tahaffuz' (pronunciation) and emotional cadence. ";
+    if (settings.stability > 70) styleInstruction += "Use a steady, formal 'Zaban' (language) style. ";
+    else styleInstruction += "Use dramatic pauses and vocal variations common in classical Urdu narration. ";
   } else {
     styleInstruction = settings.stability > 70 
-      ? "Read with very steady, formal and clear pronunciation. " 
-      : "Read with natural, expressive storytelling variations. ";
+      ? "Read with professional, steady, and extremely clear English pronunciation. " 
+      : "Read with expressive, cinematic English storytelling variations. ";
   }
 
   if (settings.styleExaggeration > 50) {
-    styleInstruction += "Make the performance highly dramatic and theatrical. ";
+    styleInstruction += "Inject high levels of drama, passion, and theatrical flair into the performance. ";
   }
 
   const prompt = `${styleInstruction}
-Text to speak: ${text}`;
+  
+Text to synthesize: ${text}`;
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",

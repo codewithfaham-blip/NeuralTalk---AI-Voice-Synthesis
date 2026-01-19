@@ -16,11 +16,20 @@ export const SAMPLE_SCRIPTS = {
 
 export const VOICES: Voice[] = [
   {
+    id: 'v-bilingual-1',
+    name: 'Aria (Bilingual)',
+    previewUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Aria',
+    category: 'Conversational',
+    tags: ['Urdu', 'English', 'Modern'],
+    geminiVoice: 'Zephyr',
+    description: 'Expertly handles code-switching between Urdu and English with a modern, friendly tone.'
+  },
+  {
     id: 'v-urdu-1',
     name: 'Sultan (Dastango)',
     previewUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Sultan',
     category: 'Narrative',
-    tags: ['Urdu', 'Epic', 'Classic'],
+    tags: ['Urdu', 'Epic', 'Deep'],
     geminiVoice: 'Charon',
     description: 'Deep, resonant Urdu voice optimized for classical storytelling and epics.'
   },
@@ -29,16 +38,16 @@ export const VOICES: Voice[] = [
     name: 'Zoya (Kahani-kar)',
     previewUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Zoya',
     category: 'Narrative',
-    tags: ['Urdu', 'Soft', 'Warm'],
+    tags: ['Urdu', 'Soft', 'Bilingual'],
     geminiVoice: 'Kore',
-    description: 'Soothing and melodic Urdu voice, perfect for children\'s stories and emotional poems.'
+    description: 'Soothing Urdu voice, great for children\'s stories. Also handles English vocabulary naturally.'
   },
   {
     id: 'v1',
     name: 'Rachel',
     previewUrl: 'https://picsum.photos/seed/rachel/200',
     category: 'Professional',
-    tags: ['Calm', 'Warm', 'Narrative'],
+    tags: ['English', 'Calm', 'Warm'],
     geminiVoice: 'Kore',
     description: 'A soothing and clear professional voice perfect for audiobooks and narrations.'
   },
@@ -47,18 +56,18 @@ export const VOICES: Voice[] = [
     name: 'Clyde',
     previewUrl: 'https://picsum.photos/seed/clyde/200',
     category: 'Narrative',
-    tags: ['Deep', 'Authoritative', 'News'],
+    tags: ['English', 'Deep', 'Authoritative'],
     geminiVoice: 'Charon',
     description: 'Deep and resonant, ideal for documentary narration and strong announcements.'
   },
   {
     id: 'v3',
-    name: 'Bella',
-    previewUrl: 'https://picsum.photos/seed/bella/200',
-    category: 'Conversational',
-    tags: ['Energetic', 'Friendly', 'Youthful'],
-    geminiVoice: 'Zephyr',
-    description: 'Bright and optimistic voice suited for social media content and podcasts.'
+    name: 'Fenrir',
+    previewUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Fenrir',
+    category: 'Character',
+    tags: ['English', 'Rough', 'Old'],
+    geminiVoice: 'Fenrir',
+    description: 'Gritty and textured voice, perfect for fantasy characters and villains.'
   }
 ];
 
