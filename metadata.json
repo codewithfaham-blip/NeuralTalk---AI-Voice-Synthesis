@@ -1,0 +1,7 @@
+{
+  "name": "NeuralTalk - AI Voice Synthesis",
+  "description": "A high-fidelity AI text-to-speech platform powered by Gemini, featuring diverse voices, voice settings, and history tracking.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
