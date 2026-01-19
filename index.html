@@ -5,13 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NeuralTalk | AI Voice Studio</title>
     <script>
-        // Polyfill process for browser environment
-        window.process = { 
-            env: { 
-                API_KEY: '',
-                NODE_ENV: 'production'
-            } 
-        };
+        /**
+         * Safe polyfill for 'process' to prevent 'ReferenceError: process is not defined'
+         * while ensuring we don't overwrite the actual API_KEY injected by the environment.
+         */
+        if (typeof window.process === 'undefined') {
+            window.process = { env: {} };
+        } else if (typeof window.process.env === 'undefined') {
+            window.process.env = {};
+        }
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
