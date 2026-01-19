@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Play, 
+  Pause,
   Settings2, 
   History, 
   Plus, 
@@ -29,12 +30,12 @@ import {
   RotateCcw,
   Languages
 } from 'lucide-react';
-import { VOICES, INITIAL_SETTINGS, SAMPLE_SCRIPTS } from './constants';
-import { Voice, VoiceHistory, GenerationSettings } from './types';
-import VoiceCard from './components/VoiceCard';
-import Slider from './components/Slider';
-import { generateSpeech } from './services/geminiTTS';
-import { decodeAudioData, pcmToWav, encode, decode } from './utils/audioUtils';
+import { VOICES, INITIAL_SETTINGS, SAMPLE_SCRIPTS } from './constants.tsx';
+import { Voice, VoiceHistory, GenerationSettings } from './types.ts';
+import VoiceCard from './components/VoiceCard.tsx';
+import Slider from './components/Slider.tsx';
+import { generateSpeech } from './services/geminiTTS.ts';
+import { decodeAudioData, pcmToWav, encode, decode } from './utils/audioUtils.ts';
 
 const STORAGE_KEYS = {
   HISTORY: 'neuraltalk_history_v2',
@@ -55,7 +56,8 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('create');
   const [text, setText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [currentAudio, setCurrentAudio] = useState<{ id: string; buffer: AudioBuffer; audioData: Uint8Array } | null>(null);
+  const [currentAudio, setCurrentAudio] = useState<{ id: string; buffer: AudioBuffer; audioData: Uint8Array; url: string } | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [deepStorytelling, setDeepStorytelling] = useState(false);
 
   // --- Voice Cloning & Recording State ---
@@ -71,6 +73,7 @@ const App: React.FC = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
+  const audioInstanceRef = useRef<HTMLAudioElement | null>(null);
 
   // --- State Persistence ---
   const [customVoices, setCustomVoices] = useState<Voice[]>(() => {
@@ -117,6 +120,26 @@ const App: React.FC = () => {
     const hasEnglish = englishPattern.test(text);
     return { hasUrdu, hasEnglish, isBilingual: hasUrdu && hasEnglish };
   }, [text]);
+
+  useEffect(() => {
+    audioInstanceRef.current = new Audio();
+    const audio = audioInstanceRef.current;
+    
+    const handlePlay = () => setIsPlaying(true);
+    const handlePause = () => setIsPlaying(false);
+    const handleEnded = () => setIsPlaying(false);
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+      audio.pause();
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
@@ -171,9 +194,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Audio Logic ---
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const getAudioContext = () => {
     if (!audioCtxRef.current) {
@@ -182,16 +203,22 @@ const App: React.FC = () => {
     return audioCtxRef.current;
   };
 
-  const playBuffer = (buffer: AudioBuffer) => {
-    const ctx = getAudioContext();
-    if (audioSourceRef.current) {
-      try { audioSourceRef.current.stop(); } catch(e) {}
+  const playAudio = (url: string) => {
+    if (audioInstanceRef.current) {
+      if (audioInstanceRef.current.src !== url) {
+        audioInstanceRef.current.src = url;
+      }
+      audioInstanceRef.current.play();
     }
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    source.start();
-    audioSourceRef.current = source;
+  };
+
+  const togglePlayback = () => {
+    if (!currentAudio || !audioInstanceRef.current) return;
+    if (isPlaying) {
+      audioInstanceRef.current.pause();
+    } else {
+      audioInstanceRef.current.play();
+    }
   };
 
   const handleGenerate = async () => {
@@ -207,6 +234,9 @@ const App: React.FC = () => {
       const audioData = await generateSpeech(text, selectedVoice.geminiVoice, generationSettings);
       const ctx = getAudioContext();
       const buffer = await decodeAudioData(audioData, ctx, 24000, 1);
+      const wavBlob = pcmToWav(audioData, 24000);
+      const url = URL.createObjectURL(wavBlob);
+      
       const newHistory: VoiceHistory = {
         id: crypto.randomUUID(),
         text: text.slice(0, 100),
@@ -215,8 +245,8 @@ const App: React.FC = () => {
         audioData: audioData
       };
       setHistory(prev => [newHistory, ...prev]);
-      setCurrentAudio({ id: newHistory.id, buffer, audioData });
-      playBuffer(buffer);
+      setCurrentAudio({ id: newHistory.id, buffer, audioData, url });
+      playAudio(url);
       setText('');
     } catch (error) {
       console.error(error);
@@ -388,6 +418,18 @@ const App: React.FC = () => {
                   <Download size={24} />
                 </button>
                 <button 
+                  onClick={togglePlayback}
+                  disabled={!currentAudio || isGenerating}
+                  className={`flex items-center justify-center p-4 rounded-xl transition-all border ${
+                    !currentAudio || isGenerating
+                      ? 'bg-zinc-900 border-zinc-800 text-zinc-700'
+                      : 'bg-zinc-800 border-zinc-700 text-indigo-400 active:scale-95'
+                  }`}
+                  title={isPlaying ? "Pause" : "Play"}
+                >
+                  {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" />}
+                </button>
+                <button 
                   onClick={handleGenerate}
                   disabled={isGenerating || !text.trim()}
                   className={`flex-1 flex items-center justify-center gap-3 py-4 rounded-xl font-bold text-lg transition-all ${
@@ -548,7 +590,14 @@ const App: React.FC = () => {
             ) : (
               <div className="space-y-3">
                 {history.map(item => (
-                  <div key={item.id} onClick={async () => { const ctx = getAudioContext(); const buffer = await decodeAudioData(item.audioData, ctx, 24000, 1); setCurrentAudio({ id: item.id, buffer, audioData: item.audioData }); playBuffer(buffer); }} className={`p-4 rounded-xl border transition-all ${currentAudio?.id === item.id ? 'bg-indigo-500/10 border-indigo-500/30' : 'bg-zinc-900/50 border-zinc-800'}`}>
+                  <div key={item.id} onClick={async () => { 
+                    const ctx = getAudioContext(); 
+                    const buffer = await decodeAudioData(item.audioData, ctx, 24000, 1); 
+                    const wavBlob = pcmToWav(item.audioData, 24000);
+                    const url = URL.createObjectURL(wavBlob);
+                    setCurrentAudio({ id: item.id, buffer, audioData: item.audioData, url }); 
+                    playAudio(url); 
+                  }} className={`p-4 rounded-xl border transition-all ${currentAudio?.id === item.id ? 'bg-indigo-500/10 border-indigo-500/30' : 'bg-zinc-900/50 border-zinc-800'}`}>
                     <div className="flex justify-between items-start mb-2"><span className="text-[10px] font-bold text-zinc-500 uppercase">{item.voiceName}</span><div className="flex gap-2"><button onClick={(e) => { e.stopPropagation(); handleDownload(item.audioData, item.id); }} className="p-1 text-zinc-400"><Download size={14}/></button><button onClick={(e) => { e.stopPropagation(); setHistory(h => h.filter(i => i.id !== item.id)); }} className="p-1 text-zinc-400"><Trash2 size={14}/></button></div></div>
                     <p className={`text-sm text-zinc-300 line-clamp-2 leading-snug ${/[\u0600-\u06FF]/.test(item.text) ? 'urdu-text text-right' : ''}`}>"{item.text}"</p>
                   </div>
@@ -581,7 +630,9 @@ const App: React.FC = () => {
       <main className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-6 pb-40">{renderTabContent()}</main>
       {currentAudio && (
         <div className="fixed bottom-24 left-4 right-4 bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-4 flex items-center gap-4 z-40 animate-in slide-in-from-bottom-8 duration-500">
-          <button onClick={() => playBuffer(currentAudio.buffer)} className="p-3 bg-indigo-600 rounded-xl text-white active:scale-90"><Play fill="currentColor" size={20} /></button>
+          <button onClick={togglePlayback} className="p-3 bg-indigo-600 rounded-xl text-white active:scale-90 transition-transform">
+            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+          </button>
           <div className="flex-1 min-w-0"><p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Now Narrating</p><p className={`text-sm font-semibold truncate text-zinc-300 ${/[\u0600-\u06FF]/.test(history.find(h => h.id === currentAudio.id)?.text || '') ? 'urdu-text text-right' : ''}`}>{/[\u0600-\u06FF]/.test(history.find(h => h.id === currentAudio.id)?.text || '') ? 'اردو کہانی جاری ہے' : 'Synthesis Active'}</p></div>
           <button onClick={() => setCurrentAudio(null)} className="p-2 text-zinc-500"><X size={20} /></button>
         </div>

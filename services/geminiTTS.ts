@@ -1,19 +1,5 @@
-
 import { GoogleGenAI, Modality } from "@google/genai";
-import { decode } from "../utils/audioUtils";
-
-/**
- * Access API key safely from the environment.
- * The platform typically injects this, but we fallback to an empty string to avoid crashes.
- */
-const getApiKey = () => {
-  try {
-    // Check both standard process.env and window.process for maximum compatibility
-    return (typeof process !== 'undefined' ? process.env.API_KEY : (window as any).process?.env?.API_KEY) || '';
-  } catch (e) {
-    return '';
-  }
-};
+import { decode } from "../utils/audioUtils.ts";
 
 /**
  * Detects language composition of the text with higher precision
@@ -38,8 +24,7 @@ export async function generateSpeech(
   voiceName: string, 
   settings: { stability: number; similarity: number; styleExaggeration: number }
 ): Promise<Uint8Array> {
-  const apiKey = getApiKey();
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const profile = getLanguageProfile(text);
   
   // Refined Prompt Engineering for Seamless Bilingual Storytelling

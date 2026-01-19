@@ -1,6 +1,5 @@
-
 import React from 'react';
-import { Voice } from '../types';
+import { Voice } from '../types.ts';
 import { Play, CheckCircle2 } from 'lucide-react';
 
 interface VoiceCardProps {
