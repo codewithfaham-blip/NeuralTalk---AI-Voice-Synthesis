@@ -1,0 +1,21 @@
+{
+  "name": "NeuralTalk AI Voice Studio",
+  "short_name": "NeuralTalk",
+  "description": "High-fidelity AI voice synthesis and cloning.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "https://api.dicebear.com/7.x/initials/svg?seed=NT&backgroundColor=6366f1",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "https://api.dicebear.com/7.x/initials/svg?seed=NT&backgroundColor=6366f1",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
