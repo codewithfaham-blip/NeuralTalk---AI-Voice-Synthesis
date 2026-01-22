@@ -9,6 +9,7 @@ export interface Voice {
   description: string;
   isCustom?: boolean;
   sampleData?: string; // Base64 audio sample
+  sampleMimeType?: string;
 }
 
 export interface VoiceHistory {

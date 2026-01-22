@@ -1,61 +1,75 @@
+
 import { GoogleGenAI, Modality } from "@google/genai";
 import { decode } from "../utils/audioUtils.ts";
+import { Voice } from "../types.ts";
 
 /**
- * Detects language composition of the text with higher precision
+ * Detects language composition of the text
  */
 function getLanguageProfile(text: string) {
   const urduPattern = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
   const englishPattern = /[a-zA-Z]/;
-  
   const hasUrdu = urduPattern.test(text);
   const hasEnglish = englishPattern.test(text);
-  
-  return {
-    hasUrdu,
-    hasEnglish,
-    isBilingual: hasUrdu && hasEnglish,
-    primary: hasUrdu ? 'Urdu' : 'English'
-  };
+  return { hasUrdu, hasEnglish, isBilingual: hasUrdu && hasEnglish };
 }
 
 export async function generateSpeech(
   text: string, 
-  voiceName: string, 
+  voice: Voice,
   settings: { stability: number; similarity: number; styleExaggeration: number }
 ): Promise<Uint8Array> {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const profile = getLanguageProfile(text);
   
-  // Refined Prompt Engineering for Seamless Bilingual Storytelling
+  // If it's a custom (cloned) voice, use the Native Audio model for imitation
+  if (voice.isCustom && voice.sampleData) {
+    const base64Data = voice.sampleData.split(',')[1] || voice.sampleData;
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-native-audio-preview-12-2025",
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType: voice.sampleMimeType || 'audio/wav',
+                data: base64Data
+              }
+            },
+            {
+              text: `You are a professional voice actor. Listen to the provided audio sample carefully. 
+              Now, using the EXACT SAME voice, tone, accent, and timbre from that sample, please read the following text. 
+              Do not add any background noise. Just the clear voice output.
+              
+              Text to read: ${text}`
+            }
+          ]
+        }
+      ],
+      config: {
+        responseModalities: [Modality.AUDIO]
+      }
+    });
+
+    const audioPart = response.candidates?.[0]?.content?.parts.find(p => p.inlineData);
+    if (!audioPart?.inlineData?.data) {
+      throw new Error("Neural cloning engine failed to synthesize audio.");
+    }
+    return decode(audioPart.inlineData.data);
+  }
+
+  // Fallback to standard high-quality TTS for prebuilt voices
   let styleInstruction = "";
-  
   if (profile.isBilingual) {
-    styleInstruction = `
-      This text contains a mix of English and Urdu. 
-      Please perform a seamless bilingual narration:
-      1. For Urdu words, use a rich, traditional 'Dastangoi' tone with deep emotional resonance.
-      2. For English words, use a clear, modern, and natural accent.
-      3. Ensure the transitions between languages are smooth and do not sound robotic.
-      4. Maintain the overall narrative flow as if a single fluent bilingual speaker is telling a story.
-    `;
+    styleInstruction = "Seamlessly switch between English and Urdu with a natural narrative flow. ";
   } else if (profile.hasUrdu) {
-    styleInstruction = "Read this text in a classic Urdu storytelling style. Focus on the 'Urdu-ness' of the pronunciation (Tahaffuz), specifically the deep 'kh' and 'gh' sounds and the poetic rhythm. ";
-    if (settings.stability > 70) styleInstruction += "Keep the delivery formal and elegant. ";
-    else styleInstruction += "Add emotional gravity and dramatic pauses between sentences. ";
+    styleInstruction = "Classic Urdu storytelling (Dastangoi) style. Focus on poetic rhythm. ";
   } else {
-    styleInstruction = settings.stability > 70 
-      ? "Deliver a professional, clear, and neutral English narration. " 
-      : "Deliver a highly expressive and cinematic English story performance. ";
+    styleInstruction = settings.stability > 70 ? "Professional and clear. " : "Expressive and cinematic. ";
   }
 
-  if (settings.styleExaggeration > 50) {
-    styleInstruction += "Use extremely theatrical and high-energy vocal variations. ";
-  }
-
-  const prompt = `${styleInstruction.trim()}
-
-Text to narrate: ${text}`;
+  const prompt = `${styleInstruction} Text: ${text}`;
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
@@ -64,16 +78,13 @@ Text to narrate: ${text}`;
       responseModalities: [Modality.AUDIO],
       speechConfig: {
         voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: voiceName as any },
+          prebuiltVoiceConfig: { voiceName: voice.geminiVoice as any },
         },
       },
     },
   });
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-  if (!base64Audio) {
-    throw new Error("No audio data received from Gemini API. Ensure your API Key is correctly configured.");
-  }
-
+  if (!base64Audio) throw new Error("TTS engine returned no data.");
   return decode(base64Audio);
 }

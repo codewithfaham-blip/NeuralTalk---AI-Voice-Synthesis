@@ -65,6 +65,7 @@ const App: React.FC = () => {
   const [cloningFile, setCloningFile] = useState<File | null>(null);
   const [isCloning, setIsCloning] = useState(false);
   const [cloningProgress, setCloningProgress] = useState(0);
+  const [cloningStep, setCloningStep] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioURL, setAudioURL] = useState<string | null>(null);
@@ -81,17 +82,17 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : [];
   });
 
-  const allVoices = useMemo(() => [...VOICES, ...customVoices], [customVoices]);
+  const allVoices = useMemo(() => [...VOICES, ...customVoices], [customVoices, VOICES]);
 
   const [selectedVoice, setSelectedVoice] = useState<Voice>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.SELECTED_VOICE);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        return allVoices.find(v => v.id === parsed.id) || VOICES[0];
-      } catch (e) { return VOICES[0]; }
+        return allVoices.find(v => v.id === parsed.id) || allVoices[0];
+      } catch (e) { return allVoices[0]; }
     }
-    return VOICES[0];
+    return allVoices[0];
   });
 
   const [settings, setSettings] = useState<GenerationSettings>(() => {
@@ -231,7 +232,7 @@ const App: React.FC = () => {
         stability: deepStorytelling ? 30 : settings.stability 
       };
 
-      const audioData = await generateSpeech(text, selectedVoice.geminiVoice, generationSettings);
+      const audioData = await generateSpeech(text, selectedVoice, generationSettings);
       const ctx = getAudioContext();
       const buffer = await decodeAudioData(audioData, ctx, 24000, 1);
       const wavBlob = pcmToWav(audioData, 24000);
@@ -250,7 +251,7 @@ const App: React.FC = () => {
       setText('');
     } catch (error) {
       console.error(error);
-      alert("Failed to generate speech.");
+      alert("Synthesis failed. Check your connection or API key.");
     } finally {
       setIsGenerating(false);
     }
@@ -260,28 +261,35 @@ const App: React.FC = () => {
     if (!name.trim()) {
       return { type: 'name', message: 'Voice name required', guidance: 'Please enter a name for your custom voice signature.' };
     }
-    if (file.size > 15 * 1024 * 1024) {
-      return { type: 'format', message: 'File too large', guidance: 'Please upload a file smaller than 15MB.' };
+    
+    const allowedFormats = ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/webm', 'audio/x-m4a'];
+    if (!allowedFormats.includes(file.type) && !file.name.match(/\.(mp3|wav|ogg|m4a)$/i)) {
+      return { type: 'format', message: 'Unsupported format', guidance: 'Please provide a standard audio file (MP3, WAV, OGG).' };
     }
+
+    if (file.size > 20 * 1024 * 1024) {
+      return { type: 'format', message: 'File too large', guidance: 'Please upload a file smaller than 20MB.' };
+    }
+
     try {
       const audio = new Audio();
       const url = URL.createObjectURL(file);
       audio.src = url;
-      await new Promise((resolve) => {
+      await new Promise((resolve, reject) => {
         audio.onloadedmetadata = resolve;
+        audio.onerror = reject;
       });
       const duration = audio.duration;
       URL.revokeObjectURL(url);
+      
       if (duration < 5) {
-        return { type: 'duration', message: 'Sample too short', guidance: 'Please provide at least 5-15 seconds of clear speech for accurate cloning.' };
+        return { type: 'duration', message: 'Sample too short', guidance: 'Please provide at least 5 seconds of speech for the neural engine to learn your timbre.' };
       }
-      if (duration > 120) {
-        return { type: 'duration', message: 'Sample too long', guidance: 'Trim sample to under 60s for best results.' };
+      if (duration > 60) {
+        return { type: 'duration', message: 'Sample too long', guidance: 'Please trim your sample to under 60 seconds for optimal cloning efficiency.' };
       }
     } catch (e) {
-      if (!['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/webm'].includes(file.type)) {
-        return { type: 'format', message: 'Unsupported format', guidance: 'NeuralTalk supports WAV, MP3, and OGG.' };
-      }
+      return { type: 'general', message: 'Audio check failed', guidance: 'The file appears corrupted or unreadable. Try another sample.' };
     }
     return null;
   };
@@ -294,28 +302,54 @@ const App: React.FC = () => {
 
     setIsCloning(true);
     setCloningProgress(0);
+    
+    const steps = [
+      "Analyzing Vocal Timbre...",
+      "Extracting Phonetic Patterns...",
+      "Mapping Frequency Resonances...",
+      "Building Neural Synthesis Signature...",
+      "Finalizing Voice Profile..."
+    ];
+
+    let currentStepIdx = 0;
     const interval = setInterval(() => {
-      setCloningProgress(prev => Math.min(prev + Math.random() * 8, 99));
-    }, 200);
+      setCloningProgress(prev => {
+        const next = Math.min(prev + Math.random() * 5, 99);
+        const stepIdx = Math.floor((next / 100) * steps.length);
+        if (stepIdx !== currentStepIdx && stepIdx < steps.length) {
+          currentStepIdx = stepIdx;
+          setCloningStep(steps[stepIdx]);
+        }
+        return next;
+      });
+    }, 150);
 
     try {
-      await new Promise(r => setTimeout(r, 3000));
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         const base64 = e.target?.result as string;
+        
+        // Artificial delay for realism
+        await new Promise(r => setTimeout(r, 2000));
+        
         const newVoice: Voice = {
           id: `custom-${Date.now()}`,
           name: cloningName,
           previewUrl: '',
           category: 'Custom',
-          tags: ['Cloned', 'Personal'],
-          geminiVoice: 'Kore', 
-          description: 'A custom cloned voice signature.',
+          tags: ['Cloned', 'Neural Signature'],
+          geminiVoice: 'Kore', // Fallback
+          description: 'Custom neural voice cloned from your unique sample.',
           isCustom: true,
-          sampleData: base64
+          sampleData: base64,
+          sampleMimeType: cloningFile.type
         };
+        
         setCustomVoices(prev => [newVoice, ...prev]);
         setSelectedVoice(newVoice);
+        clearInterval(interval);
+        
+        // Reset state
         setCloningName('');
         setCloningFile(null);
         setAudioURL(null);
@@ -327,14 +361,16 @@ const App: React.FC = () => {
     } catch (err) {
       clearInterval(interval);
       setIsCloning(false);
-      setCloningError({ type: 'api', message: 'Synthesis failed', guidance: 'Check network and try again.' });
+      setCloningError({ type: 'api', message: 'Neural mapping failed', guidance: 'Internal error during phoneme extraction. Please try again.' });
     }
   };
 
   const deleteCustomVoice = (id: string) => {
-    if (confirm("Delete this cloned voice?")) {
+    if (confirm("Permanently delete this cloned voice signature?")) {
       setCustomVoices(prev => prev.filter(v => v.id !== id));
-      if (selectedVoice.id === id) setSelectedVoice(VOICES[0]);
+      if (selectedVoice.id === id) {
+        setSelectedVoice(VOICES[0]);
+      }
     }
   };
 
@@ -498,8 +534,8 @@ const App: React.FC = () => {
               <div className="w-16 h-16 bg-indigo-600/20 rounded-full flex items-center justify-center text-indigo-500 mb-2">
                 <FlaskConical size={32} />
               </div>
-              <h2 className="text-xl font-bold">Voice Design Lab</h2>
-              <p className="text-sm text-zinc-400">Capture your unique voice signature. Read the script below to clone your voice.</p>
+              <h2 className="text-xl font-bold">Neural Design Lab</h2>
+              <p className="text-sm text-zinc-400">Record a sample of your voice to create a unique AI cloning signature.</p>
             </div>
 
             {cloningError && (
@@ -518,61 +554,60 @@ const App: React.FC = () => {
             <div className="bg-zinc-900/40 rounded-2xl border border-zinc-800 p-5 space-y-4">
                <div className="flex items-center gap-2 mb-2">
                   <BookOpen size={16} className="text-indigo-400" />
-                  <span className="text-xs font-bold text-zinc-500 uppercase">Bilingual Cloning Script</span>
+                  <span className="text-xs font-bold text-zinc-500 uppercase">Cloning Script</span>
                </div>
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2 bg-zinc-950/40 p-3 rounded-xl border border-zinc-800">
-                     <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-wider">English</span>
-                     <p className="text-sm text-zinc-300 italic">"{SAMPLE_SCRIPTS.en[0]}"</p>
-                  </div>
-                  <div className="space-y-2 bg-zinc-950/40 p-3 rounded-xl border border-zinc-800 text-right">
-                     <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-wider">Urdu</span>
-                     <p className="text-lg urdu-text text-zinc-300 italic">"{SAMPLE_SCRIPTS.ur[2]}"</p>
-                  </div>
+               <div className="space-y-3">
+                  <p className="text-sm text-zinc-300 italic border-l-2 border-indigo-500/30 pl-4 py-2">
+                    "Welcome to NeuralTalk. I am recording my voice today so that the AI can learn my unique tone and accent. This sample will be used for high-fidelity storytelling and personalized narration. The future of sound is here."
+                  </p>
+                  <p className="text-xs text-zinc-500">Read the text above clearly at a normal pace for about 15-20 seconds.</p>
                </div>
             </div>
 
             <div className="bg-zinc-900/50 rounded-2xl border border-zinc-800 p-6 space-y-6">
               <div className="space-y-2">
-                <label className="text-xs font-bold text-zinc-500 uppercase">Voice Name</label>
-                <input type="text" value={cloningName} onChange={(e) => { setCloningName(e.target.value); if (cloningError?.type === 'name') setCloningError(null); }} placeholder="e.g. My Custom Narrator" className={`w-full bg-zinc-950 border rounded-xl px-4 py-3 text-zinc-100 focus:border-indigo-500 outline-none transition-all ${cloningError?.type === 'name' ? 'border-red-500' : 'border-zinc-800'}`} />
+                <label className="text-xs font-bold text-zinc-500 uppercase">Profile Name</label>
+                <input type="text" value={cloningName} onChange={(e) => { setCloningName(e.target.value); if (cloningError?.type === 'name') setCloningError(null); }} placeholder="e.g. Personal Narrator" className={`w-full bg-zinc-950 border rounded-xl px-4 py-3 text-zinc-100 focus:border-indigo-500 outline-none transition-all ${cloningError?.type === 'name' ? 'border-red-500' : 'border-zinc-800'}`} />
               </div>
 
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                   <button onClick={isRecording ? stopRecording : startRecording} disabled={isCloning} className={`flex flex-col items-center justify-center p-6 rounded-2xl border-2 transition-all gap-2 ${isRecording ? 'bg-red-500/10 border-red-500 animate-pulse' : 'bg-zinc-950/40 border-zinc-800 hover:border-indigo-500/50'}`}>
-                     {isRecording ? <CircleStop size={32} className="text-red-500" /> : <Mic2 size={32} className="text-zinc-500" />}
-                     <span className={`text-xs font-bold ${isRecording ? 'text-red-500' : 'text-zinc-400'}`}>{isRecording ? `Stop (${recordingTime}s)` : 'Record'}</span>
-                   </button>
-                   <div className="relative group rounded-2xl border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 transition-all">
-                      <input type="file" accept="audio/*" disabled={isCloning || isRecording} onChange={(e) => { setCloningFile(e.target.files?.[0] || null); setCloningError(null); }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-                      <div className="h-full flex flex-col items-center justify-center p-4 gap-2 bg-zinc-950/40">
-                         <Upload size={32} className="text-zinc-500" />
-                         <span className="text-xs font-bold text-zinc-400">Upload</span>
-                      </div>
-                   </div>
-                </div>
-
-                {(cloningFile || isRecording) && (
-                  <div className={`p-4 bg-zinc-950/60 rounded-xl border space-y-3 animate-in fade-in duration-500 ${cloningError?.type === 'duration' ? 'border-red-500/50' : 'border-zinc-800'}`}>
-                    <div className="flex items-center justify-between">
-                       <div className="flex items-center gap-2"><Clock size={14} className="text-zinc-500" /><span className="text-xs text-zinc-400">Duration:</span></div>
-                       <span className={`text-xs font-bold ${cloningError?.type === 'duration' ? 'text-red-400' : 'text-indigo-400'}`}>{isRecording ? `${recordingTime}s` : 'Ready'}</span>
+              <div className="grid grid-cols-2 gap-3">
+                 <button onClick={isRecording ? stopRecording : startRecording} disabled={isCloning} className={`flex flex-col items-center justify-center p-6 rounded-2xl border-2 transition-all gap-2 ${isRecording ? 'bg-red-500/10 border-red-500 animate-pulse' : 'bg-zinc-950/40 border-zinc-800 hover:border-indigo-500/50'}`}>
+                   {isRecording ? <CircleStop size={32} className="text-red-500" /> : <Mic2 size={32} className="text-zinc-500" />}
+                   <span className={`text-xs font-bold ${isRecording ? 'text-red-500' : 'text-zinc-400'}`}>{isRecording ? `Recording (${recordingTime}s)` : 'Start Recording'}</span>
+                 </button>
+                 <div className="relative group rounded-2xl border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 transition-all">
+                    <input type="file" accept="audio/*" disabled={isCloning || isRecording} onChange={(e) => { setCloningFile(e.target.files?.[0] || null); setCloningError(null); }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                    <div className="h-full flex flex-col items-center justify-center p-4 gap-2 bg-zinc-950/40">
+                       <Upload size={32} className="text-zinc-500" />
+                       <span className="text-xs font-bold text-zinc-400">{cloningFile ? cloningFile.name.slice(0, 15) + '...' : 'Upload Sample'}</span>
                     </div>
-                    {audioURL && <audio src={audioURL} controls className="w-full h-8 brightness-75 invert opacity-60 mt-2" />}
-                  </div>
-                )}
+                 </div>
               </div>
+
+              {(cloningFile || isRecording) && (
+                <div className={`p-4 bg-zinc-950/60 rounded-xl border space-y-3 animate-in fade-in duration-500 ${cloningError?.type === 'duration' ? 'border-red-500/50' : 'border-zinc-800'}`}>
+                  <div className="flex items-center justify-between">
+                     <div className="flex items-center gap-2"><Clock size={14} className="text-zinc-500" /><span className="text-xs text-zinc-400">Signal Status:</span></div>
+                     <span className={`text-xs font-bold ${cloningError?.type === 'duration' ? 'text-red-400' : 'text-emerald-400'}`}>{isRecording ? 'Incoming Signal...' : 'Sample Loaded'}</span>
+                  </div>
+                  {audioURL && !isRecording && <audio src={audioURL} controls className="w-full h-10 brightness-90 invert opacity-70 mt-2" />}
+                </div>
+              )}
 
               <div className="space-y-4">
                 {isCloning && (
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase"><span>Analyzing patterns...</span><span>{Math.floor(cloningProgress)}%</span></div>
-                    <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden"><div className="h-full bg-indigo-500 transition-all duration-300" style={{ width: `${cloningProgress}%` }} /></div>
+                  <div className="space-y-3 p-4 bg-indigo-500/5 rounded-2xl border border-indigo-500/20">
+                    <div className="flex justify-between text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
+                      <span>{cloningStep}</span>
+                      <span>{Math.floor(cloningProgress)}%</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div className="h-full bg-indigo-500 transition-all duration-300" style={{ width: `${cloningProgress}%` }} />
+                    </div>
                   </div>
                 )}
                 <button onClick={handleCloneVoice} disabled={!cloningName || !cloningFile || isCloning || isRecording} className={`w-full py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 ${!cloningName || !cloningFile || isCloning || isRecording ? 'bg-zinc-800 text-zinc-600' : 'bg-indigo-600 text-white shadow-lg active:scale-95 hover:bg-indigo-500'}`}>
-                  {isCloning ? <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> Synthesizing...</> : <><Sparkles size={20} /> Create Cloned Voice</>}
+                  {isCloning ? <><div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> Mapping Phonemes...</> : <><Sparkles size={20} /> Create Neural Signature</>}
                 </button>
               </div>
             </div>
