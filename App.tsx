@@ -22,7 +22,8 @@ import {
   Languages,
   Activity,
   Info,
-  AlertCircle
+  AlertCircle,
+  Timer
 } from 'lucide-react';
 import { VOICES, INITIAL_SETTINGS } from './constants.tsx';
 import { Voice, VoiceHistory, GenerationSettings } from './types.ts';
@@ -38,7 +39,8 @@ const STORAGE_KEYS = {
   CUSTOM_VOICES: 'neuraltalk_custom_voices_v2'
 };
 
-const QUOTA_LIMIT = 10; // Gemini Free Tier Limit
+const QUOTA_LIMIT = 10; // Gemini Free Tier Limit (Requests Per Minute)
+const WINDOW_MS = 60000; // 60 seconds rolling window
 
 type Tab = 'create' | 'voices' | 'lab' | 'history' | 'settings';
 
@@ -52,6 +54,7 @@ const App: React.FC = () => {
   
   // --- Quota Tracking State ---
   const [genTimestamps, setGenTimestamps] = useState<number[]>([]);
+  const [secondsToReset, setSecondsToReset] = useState<number>(0);
   
   // --- Voice Cloning State ---
   const [cloningName, setCloningName] = useState('');
@@ -112,18 +115,34 @@ const App: React.FC = () => {
     return { hasUrdu: urduPattern.test(text) };
   }, [text]);
 
-  // Calculate current quota usage in a rolling 60-second window
+  // Calculate current quota usage
   const activeQuota = useMemo(() => {
     const now = Date.now();
-    return genTimestamps.filter(t => now - t < 60000).length;
+    return genTimestamps.filter(t => now - t < WINDOW_MS).length;
   }, [genTimestamps]);
 
-  // Clean up old timestamps every few seconds
+  // Handle countdown and quota cleanup
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      setGenTimestamps(prev => prev.filter(t => now - t < 60000));
-    }, 5000);
+      
+      // Clean up old timestamps
+      setGenTimestamps(prev => {
+        const filtered = prev.filter(t => now - t < WINDOW_MS);
+        
+        // Calculate reset time if quota is full
+        if (filtered.length >= QUOTA_LIMIT) {
+          const oldest = filtered[0];
+          const msRemaining = WINDOW_MS - (now - oldest);
+          setSecondsToReset(Math.max(0, Math.ceil(msRemaining / 1000)));
+        } else {
+          setSecondsToReset(0);
+        }
+        
+        return filtered;
+      });
+    }, 1000); // Check every second for smooth countdown
+    
     return () => clearInterval(interval);
   }, []);
 
@@ -174,7 +193,7 @@ const App: React.FC = () => {
   };
 
   const handleGenerate = async () => {
-    if (!text.trim() || isGenerating) return;
+    if (!text.trim() || isGenerating || activeQuota >= QUOTA_LIMIT) return;
     setAppError(null);
     try {
       if (!process.env.API_KEY || process.env.API_KEY.includes('your_')) {
@@ -184,7 +203,6 @@ const App: React.FC = () => {
       setIsGenerating(true);
       const audioData = await generateSpeech(text, selectedVoice, settings);
       
-      // Update Quota on success
       setGenTimestamps(prev => [...prev, Date.now()]);
 
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -210,7 +228,7 @@ const App: React.FC = () => {
     } catch (error: any) {
       console.error("Generation Error:", error);
       if (error.message.includes('429')) {
-        setAppError("Quota Full: Aapki limit khatam ho gayi hai. Bara-e-maherbani 60 seconds intezar karein.");
+        setAppError("Quota Full: Aapki limit khatam ho gayi hai.");
       } else {
         setAppError(`Error: ${error.message}`);
       }
@@ -224,14 +242,24 @@ const App: React.FC = () => {
       case 'create':
         return (
           <div className="space-y-6 animate-in fade-in duration-300">
+            {activeQuota >= QUOTA_LIMIT && (
+              <div className="bg-amber-500/10 border border-amber-500/50 rounded-xl p-4 flex gap-3 items-center animate-pulse">
+                <Timer className="text-amber-500 shrink-0" size={20} />
+                <div className="flex-1">
+                  <p className="text-sm font-bold text-amber-500 leading-tight">Next Slot Available in:</p>
+                  <p className="text-xl font-black text-amber-400">{secondsToReset} Seconds</p>
+                </div>
+              </div>
+            )}
+
             {appError && (
-              <div className="bg-red-500/10 border border-red-500/50 rounded-xl p-4 flex gap-3 items-start animate-in slide-in-from-top-4">
+              <div className="bg-red-500/10 border border-red-500/50 rounded-xl p-4 flex gap-3 items-start">
                 <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={18} />
                 <div className="flex-1">
-                  <p className="text-sm font-bold text-red-500 leading-tight">Generation Limit Hit</p>
+                  <p className="text-sm font-bold text-red-500">Generation Error</p>
                   <p className="text-xs text-red-400/80 mt-1">{appError}</p>
                 </div>
-                <button onClick={() => setAppError(null)} className="text-red-500/50 hover:text-red-500"><X size={16} /></button>
+                <button onClick={() => setAppError(null)} className="text-red-500/50"><X size={16} /></button>
               </div>
             )}
 
@@ -255,10 +283,35 @@ const App: React.FC = () => {
                 className={`w-full h-44 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none text-lg leading-relaxed resize-none ${languageProfile.hasUrdu ? 'urdu-text' : ''}`}
               />
               <div className="flex gap-3 mt-4">
-                <button onClick={handleGenerate} disabled={isGenerating || !text.trim() || activeQuota >= QUOTA_LIMIT} className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-xl font-bold transition-all active:scale-95 ${isGenerating || activeQuota >= QUOTA_LIMIT ? 'bg-zinc-800 text-zinc-500' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'}`}>
-                  {isGenerating ? <div className="w-5 h-5 border-2 border-zinc-600 border-t-indigo-500 rounded-full animate-spin" /> : activeQuota >= QUOTA_LIMIT ? <><AlertTriangle size={18} /> Quota Full</> : <><Sparkles size={18} /> Generate Voice</>}
+                <button 
+                  onClick={handleGenerate} 
+                  disabled={isGenerating || !text.trim() || activeQuota >= QUOTA_LIMIT} 
+                  className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-xl font-bold transition-all active:scale-95 ${
+                    isGenerating || activeQuota >= QUOTA_LIMIT 
+                      ? 'bg-zinc-800 text-zinc-500 border border-zinc-700' 
+                      : 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'
+                  }`}
+                >
+                  {isGenerating ? (
+                    <div className="w-5 h-5 border-2 border-zinc-600 border-t-indigo-500 rounded-full animate-spin" />
+                  ) : activeQuota >= QUOTA_LIMIT ? (
+                    <><Timer size={18} /> Wait {secondsToReset}s</>
+                  ) : (
+                    <><Sparkles size={18} /> Generate Voice</>
+                  )}
                 </button>
               </div>
+            </div>
+          </div>
+        );
+      case 'voices':
+        return (
+          <div className="space-y-4 pb-20 animate-in fade-in duration-300">
+            <h2 className="text-xl font-bold px-1">Global Voices</h2>
+            <div className="grid grid-cols-1 gap-3">
+              {allVoices.map(v => (
+                <VoiceCard key={v.id} voice={v} isSelected={selectedVoice.id === v.id} onSelect={(v) => { setSelectedVoice(v); setActiveTab('create'); }} />
+              ))}
             </div>
           </div>
         );
@@ -268,7 +321,7 @@ const App: React.FC = () => {
             <div className="text-center px-4 space-y-2">
               <div className="w-16 h-16 bg-indigo-600/20 rounded-full flex items-center justify-center text-indigo-500 mx-auto mb-2"><FlaskConical size={32} /></div>
               <h2 className="text-xl font-bold">Neural Voice Lab</h2>
-              <p className="text-sm text-zinc-400">Record 15s sample for cloning.</p>
+              <p className="text-sm text-zinc-400">Clone any voice from a 15s recording.</p>
             </div>
             
             <div className="bg-zinc-900/50 rounded-2xl border border-zinc-800 p-6 space-y-6 shadow-xl">
@@ -310,17 +363,6 @@ const App: React.FC = () => {
               <button onClick={async () => { if (!cloningName || !cloningFile) return; setIsCloning(true); setCloningProgress(0); const steps = ["Analyzing", "Mapping", "Cloning", "Saving"]; const interval = setInterval(() => setCloningProgress(p => { const next = Math.min(p + 2.5, 99); const stepIdx = Math.floor((next / 100) * steps.length); setCloningStep(steps[stepIdx]); return next; }), 100); try { const reader = new FileReader(); reader.onload = async (e) => { const base64 = e.target?.result as string; await new Promise(r => setTimeout(r, 1500)); const newVoice: Voice = { id: `custom-${Date.now()}`, name: cloningName, previewUrl: '', category: 'Custom', tags: ['Neural'], geminiVoice: 'Kore', description: 'Personalized voice signature.', isCustom: true, sampleData: base64, sampleMimeType: cloningFile.type }; setCustomVoices(p => [newVoice, ...p]); setSelectedVoice(newVoice); clearInterval(interval); setIsCloning(false); setActiveTab('create'); }; reader.readAsDataURL(cloningFile); } catch (e) { clearInterval(interval); setIsCloning(false); } }} disabled={!cloningName || !cloningFile || isCloning} className="w-full py-4 rounded-xl font-bold bg-indigo-600 text-white disabled:bg-zinc-800 disabled:text-zinc-600 active:scale-95 transition-all">
                 {isCloning ? 'Synthesizing Neural Map...' : 'Clone My Voice'}
               </button>
-            </div>
-          </div>
-        );
-      case 'voices':
-        return (
-          <div className="space-y-4 pb-20 animate-in fade-in duration-300">
-            <h2 className="text-xl font-bold px-1">Global Voices</h2>
-            <div className="grid grid-cols-1 gap-3">
-              {allVoices.map(v => (
-                <VoiceCard key={v.id} voice={v} isSelected={selectedVoice.id === v.id} onSelect={(v) => { setSelectedVoice(v); setActiveTab('create'); }} />
-              ))}
             </div>
           </div>
         );
@@ -372,13 +414,17 @@ const App: React.FC = () => {
           <h1 className="font-bold tracking-tight">NeuralTalk</h1>
         </div>
         
-        {/* Dynamic Quota Badge */}
-        <div className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border transition-colors duration-500 ${
-          activeQuota >= 9 ? 'bg-red-500/10 text-red-500 border-red-500/30' :
-          activeQuota >= 6 ? 'bg-amber-500/10 text-amber-500 border-amber-500/30' :
+        {/* Real-time Quota Monitor */}
+        <div className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all duration-300 flex items-center gap-1.5 ${
+          activeQuota >= QUOTA_LIMIT ? 'bg-red-500 text-white border-red-400 shadow-[0_0_10px_rgba(239,68,68,0.5)]' :
+          activeQuota >= 7 ? 'bg-amber-500/10 text-amber-500 border-amber-500/30' :
           'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
         }`}>
-          Quota: {activeQuota}/{QUOTA_LIMIT}
+          {activeQuota >= QUOTA_LIMIT ? (
+            <><Timer size={10} /> Reset in {secondsToReset}s</>
+          ) : (
+            <>Quota: {activeQuota}/{QUOTA_LIMIT}</>
+          )}
         </div>
       </header>
       
