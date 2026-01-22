@@ -28,7 +28,8 @@ import {
   Info,
   AlertTriangle,
   RotateCcw,
-  Languages
+  Languages,
+  Activity
 } from 'lucide-react';
 import { VOICES, INITIAL_SETTINGS, SAMPLE_SCRIPTS } from './constants.tsx';
 import { Voice, VoiceHistory, GenerationSettings } from './types.ts';
@@ -70,11 +71,13 @@ const App: React.FC = () => {
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioURL, setAudioURL] = useState<string | null>(null);
   const [cloningError, setCloningError] = useState<CloningError | null>(null);
+  const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
   
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const audioInstanceRef = useRef<HTMLAudioElement | null>(null);
+  const labPreviewRef = useRef<HTMLAudioElement | null>(null);
 
   // --- State Persistence ---
   const [customVoices, setCustomVoices] = useState<Voice[]>(() => {
@@ -142,6 +145,27 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Effect for Lab Preview Audio
+  useEffect(() => {
+    labPreviewRef.current = new Audio();
+    const audio = labPreviewRef.current;
+    
+    const handlePlay = () => setIsPreviewPlaying(true);
+    const handlePause = () => setIsPreviewPlaying(false);
+    const handleEnded = () => setIsPreviewPlaying(false);
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('ended', handleEnded);
+      audio.pause();
+    };
+  }, []);
+
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
     localStorage.setItem(STORAGE_KEYS.SELECTED_VOICE, JSON.stringify(selectedVoice));
@@ -156,6 +180,8 @@ const App: React.FC = () => {
   // --- Recording Logic ---
   const startRecording = async () => {
     setCloningError(null);
+    setAudioURL(null);
+    setCloningFile(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(stream);
@@ -169,7 +195,8 @@ const App: React.FC = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
         const file = new File([audioBlob], "recorded_voice.wav", { type: 'audio/wav' });
         setCloningFile(file);
-        setAudioURL(URL.createObjectURL(audioBlob));
+        const url = URL.createObjectURL(audioBlob);
+        setAudioURL(url);
       };
 
       mediaRecorderRef.current.start();
@@ -222,9 +249,25 @@ const App: React.FC = () => {
     }
   };
 
+  const toggleLabPreview = () => {
+    if (!audioURL || !labPreviewRef.current) return;
+    if (isPreviewPlaying) {
+      labPreviewRef.current.pause();
+    } else {
+      if (labPreviewRef.current.src !== audioURL) {
+        labPreviewRef.current.src = audioURL;
+      }
+      labPreviewRef.current.play();
+    }
+  };
+
   const handleGenerate = async () => {
     if (!text.trim() || isGenerating) return;
     try {
+      if (!process.env.API_KEY || process.env.API_KEY === 'your_gemini_api_key_here') {
+         throw new Error("API Key is missing or invalid. Please set it in your environment variables.");
+      }
+
       setIsGenerating(true);
       const generationSettings = {
         ...settings,
@@ -249,9 +292,10 @@ const App: React.FC = () => {
       setCurrentAudio({ id: newHistory.id, buffer, audioData, url });
       playAudio(url);
       setText('');
-    } catch (error) {
-      console.error(error);
-      alert("Synthesis failed. Check your connection or API key.");
+    } catch (error: any) {
+      console.error("Synthesis error:", error);
+      const errorMsg = error?.message || "An unknown error occurred.";
+      alert(`Synthesis Failed:\n${errorMsg}\n\nTip: Verify your API_KEY is set correctly in Vercel settings.`);
     } finally {
       setIsGenerating(false);
     }
@@ -576,7 +620,14 @@ const App: React.FC = () => {
                    <span className={`text-xs font-bold ${isRecording ? 'text-red-500' : 'text-zinc-400'}`}>{isRecording ? `Recording (${recordingTime}s)` : 'Start Recording'}</span>
                  </button>
                  <div className="relative group rounded-2xl border-2 border-dashed border-zinc-800 hover:border-indigo-500/50 transition-all">
-                    <input type="file" accept="audio/*" disabled={isCloning || isRecording} onChange={(e) => { setCloningFile(e.target.files?.[0] || null); setCloningError(null); }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                    <input type="file" accept="audio/*" disabled={isCloning || isRecording} onChange={(e) => { 
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setCloningFile(file);
+                        setAudioURL(URL.createObjectURL(file));
+                        setCloningError(null);
+                      }
+                    }} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
                     <div className="h-full flex flex-col items-center justify-center p-4 gap-2 bg-zinc-950/40">
                        <Upload size={32} className="text-zinc-500" />
                        <span className="text-xs font-bold text-zinc-400">{cloningFile ? cloningFile.name.slice(0, 15) + '...' : 'Upload Sample'}</span>
@@ -585,12 +636,41 @@ const App: React.FC = () => {
               </div>
 
               {(cloningFile || isRecording) && (
-                <div className={`p-4 bg-zinc-950/60 rounded-xl border space-y-3 animate-in fade-in duration-500 ${cloningError?.type === 'duration' ? 'border-red-500/50' : 'border-zinc-800'}`}>
+                <div className={`p-5 bg-zinc-950/60 rounded-2xl border space-y-4 animate-in fade-in zoom-in-95 duration-500 ${cloningError?.type === 'duration' ? 'border-red-500/50' : 'border-zinc-800 shadow-lg shadow-indigo-500/5'}`}>
                   <div className="flex items-center justify-between">
-                     <div className="flex items-center gap-2"><Clock size={14} className="text-zinc-500" /><span className="text-xs text-zinc-400">Signal Status:</span></div>
-                     <span className={`text-xs font-bold ${cloningError?.type === 'duration' ? 'text-red-400' : 'text-emerald-400'}`}>{isRecording ? 'Incoming Signal...' : 'Sample Loaded'}</span>
+                     <div className="flex items-center gap-2"><Activity size={16} className={isRecording ? "text-red-500" : "text-emerald-500"} /><span className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Aural Feedback</span></div>
+                     <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${isRecording ? 'bg-red-500/20 text-red-500 animate-pulse' : 'bg-emerald-500/10 text-emerald-500'}`}>{isRecording ? 'Capturing Signal' : 'Signal Locked'}</span>
                   </div>
-                  {audioURL && !isRecording && <audio src={audioURL} controls className="w-full h-10 brightness-90 invert opacity-70 mt-2" />}
+
+                  {audioURL && !isRecording && (
+                    <div className="flex items-center gap-4 bg-zinc-900/80 p-3 rounded-xl border border-zinc-800 group">
+                      <button 
+                        onClick={toggleLabPreview}
+                        className="w-10 h-10 flex items-center justify-center bg-indigo-600 rounded-lg text-white hover:bg-indigo-500 active:scale-95 transition-all shadow-lg shadow-indigo-500/20"
+                      >
+                        {isPreviewPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" className="ml-0.5" />}
+                      </button>
+                      <div className="flex-1 space-y-1.5">
+                        <div className="flex justify-between items-end">
+                           <span className="text-[10px] font-bold text-zinc-600 uppercase">Cloning Preview</span>
+                           <span className="text-[10px] font-mono text-indigo-400/80">Ready to audit</span>
+                        </div>
+                        <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden flex gap-0.5">
+                          {/* Simulated waveform */}
+                          {[40, 70, 50, 90, 60, 45, 80, 55, 30, 65].map((h, i) => (
+                            <div key={i} className={`flex-1 rounded-full transition-all duration-500 ${isPreviewPlaying ? 'bg-indigo-500/50 animate-pulse' : 'bg-zinc-700'}`} style={{ height: isPreviewPlaying ? `${h}%` : '100%' }} />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!isRecording && (
+                    <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-medium italic">
+                      <Info size={12} className="text-indigo-500/50" />
+                      <span>Review the sample before initiating neural mapping.</span>
+                    </div>
+                  )}
                 </div>
               )}
 
