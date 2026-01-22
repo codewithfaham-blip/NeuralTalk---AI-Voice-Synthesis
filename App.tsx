@@ -21,7 +21,8 @@ import {
   RotateCcw,
   Languages,
   Activity,
-  Info
+  Info,
+  AlertCircle
 } from 'lucide-react';
 import { VOICES, INITIAL_SETTINGS } from './constants.tsx';
 import { Voice, VoiceHistory, GenerationSettings } from './types.ts';
@@ -37,14 +38,20 @@ const STORAGE_KEYS = {
   CUSTOM_VOICES: 'neuraltalk_custom_voices_v2'
 };
 
+const QUOTA_LIMIT = 10; // Gemini Free Tier Limit
+
 type Tab = 'create' | 'voices' | 'lab' | 'history' | 'settings';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('create');
   const [text, setText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [appError, setAppError] = useState<string | null>(null);
   const [currentAudio, setCurrentAudio] = useState<{ id: string; buffer: AudioBuffer; audioData: Uint8Array; url: string } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  
+  // --- Quota Tracking State ---
+  const [genTimestamps, setGenTimestamps] = useState<number[]>([]);
   
   // --- Voice Cloning State ---
   const [cloningName, setCloningName] = useState('');
@@ -105,19 +112,31 @@ const App: React.FC = () => {
     return { hasUrdu: urduPattern.test(text) };
   }, [text]);
 
+  // Calculate current quota usage in a rolling 60-second window
+  const activeQuota = useMemo(() => {
+    const now = Date.now();
+    return genTimestamps.filter(t => now - t < 60000).length;
+  }, [genTimestamps]);
+
+  // Clean up old timestamps every few seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setGenTimestamps(prev => prev.filter(t => now - t < 60000));
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   useEffect(() => {
     audioInstanceRef.current = new Audio();
     labPreviewRef.current = new Audio();
-    
     const setupAudio = (audio: HTMLAudioElement, setPlaying: (p: boolean) => void) => {
       audio.addEventListener('play', () => setPlaying(true));
       audio.addEventListener('pause', () => setPlaying(false));
       audio.addEventListener('ended', () => setPlaying(false));
     };
-
     setupAudio(audioInstanceRef.current, setIsPlaying);
     setupAudio(labPreviewRef.current, setIsPreviewPlaying);
-
     return () => {
       audioInstanceRef.current?.pause();
       labPreviewRef.current?.pause();
@@ -135,23 +154,14 @@ const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(storageData));
   }, [settings, selectedVoice, history, customVoices]);
 
-  // Helper function to handle Mobile Sharing (fixes Download issue in WebView)
   const handleShareAudio = async (audioData: Uint8Array, textLabel: string) => {
     const wavBlob = pcmToWav(audioData, 24000);
     const file = new File([wavBlob], `neuraltalk-${Date.now()}.wav`, { type: 'audio/wav' });
-
     if (navigator.share && navigator.canShare({ files: [file] })) {
       try {
-        await navigator.share({
-          files: [file],
-          title: 'NeuralTalk Audio',
-          text: `Audio generated for: "${textLabel.slice(0, 30)}..."`
-        });
-      } catch (err) {
-        console.error("Sharing failed", err);
-      }
+        await navigator.share({ files: [file], title: 'NeuralTalk Audio', text: `Audio for: "${textLabel.slice(0, 30)}..."` });
+      } catch (err) { console.error("Sharing failed", err); }
     } else {
-      // Fallback for desktop or non-sharing browsers
       const url = URL.createObjectURL(wavBlob);
       const a = document.createElement('a');
       a.href = url;
@@ -163,55 +173,20 @@ const App: React.FC = () => {
     }
   };
 
-  const startRecording = async () => {
-    setAudioURL(null);
-    setCloningFile(null);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
-      
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunksRef.current.push(event.data);
-      };
-
-      mediaRecorder.onstop = () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        const file = new File([audioBlob], "recorded_voice.wav", { type: 'audio/wav' });
-        setCloningFile(file);
-        setAudioURL(URL.createObjectURL(audioBlob));
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-      setRecordingTime(0);
-      timerRef.current = window.setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
-    } catch (err) {
-      alert("Microphone access denied. Please check your Expo permissions.");
-    }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-  };
-
   const handleGenerate = async () => {
     if (!text.trim() || isGenerating) return;
+    setAppError(null);
     try {
       if (!process.env.API_KEY || process.env.API_KEY.includes('your_')) {
-        throw new Error("API_KEY missing in Vercel. Please check environment variables.");
+        throw new Error("API Key configuration missing. Please check Vercel environment.");
       }
 
       setIsGenerating(true);
       const audioData = await generateSpeech(text, selectedVoice, settings);
+      
+      // Update Quota on success
+      setGenTimestamps(prev => [...prev, Date.now()]);
+
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const buffer = await decodeAudioData(audioData, ctx, 24000, 1);
       const wavBlob = pcmToWav(audioData, 24000);
@@ -233,55 +208,14 @@ const App: React.FC = () => {
       }
       setText('');
     } catch (error: any) {
-      alert(`Error: ${error.message}`);
+      console.error("Generation Error:", error);
+      if (error.message.includes('429')) {
+        setAppError("Quota Full: Aapki limit khatam ho gayi hai. Bara-e-maherbani 60 seconds intezar karein.");
+      } else {
+        setAppError(`Error: ${error.message}`);
+      }
     } finally {
       setIsGenerating(false);
-    }
-  };
-
-  const handleCloneVoice = async () => {
-    if (!cloningName || !cloningFile) return;
-    setIsCloning(true);
-    setCloningProgress(0);
-    
-    const steps = ["Analyzing", "Mapping", "Cloning", "Saving"];
-    let i = 0;
-    const interval = setInterval(() => {
-      setCloningProgress(p => {
-        const next = Math.min(p + 2.5, 99);
-        const stepIdx = Math.floor((next / 100) * steps.length);
-        setCloningStep(steps[stepIdx]);
-        return next;
-      });
-    }, 100);
-
-    try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64 = e.target?.result as string;
-        await new Promise(r => setTimeout(r, 1500));
-        const newVoice: Voice = {
-          id: `custom-${Date.now()}`,
-          name: cloningName,
-          previewUrl: '',
-          category: 'Custom',
-          tags: ['Neural'],
-          geminiVoice: 'Kore',
-          description: 'Personalized neural voice signature.',
-          isCustom: true,
-          sampleData: base64,
-          sampleMimeType: cloningFile.type
-        };
-        setCustomVoices(prev => [newVoice, ...prev]);
-        setSelectedVoice(newVoice);
-        clearInterval(interval);
-        setIsCloning(false);
-        setActiveTab('create');
-      };
-      reader.readAsDataURL(cloningFile);
-    } catch (err) {
-      clearInterval(interval);
-      setIsCloning(false);
     }
   };
 
@@ -290,6 +224,17 @@ const App: React.FC = () => {
       case 'create':
         return (
           <div className="space-y-6 animate-in fade-in duration-300">
+            {appError && (
+              <div className="bg-red-500/10 border border-red-500/50 rounded-xl p-4 flex gap-3 items-start animate-in slide-in-from-top-4">
+                <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={18} />
+                <div className="flex-1">
+                  <p className="text-sm font-bold text-red-500 leading-tight">Generation Limit Hit</p>
+                  <p className="text-xs text-red-400/80 mt-1">{appError}</p>
+                </div>
+                <button onClick={() => setAppError(null)} className="text-red-500/50 hover:text-red-500"><X size={16} /></button>
+              </div>
+            )}
+
             <div className="bg-zinc-900/50 rounded-2xl border border-zinc-800 p-4 shadow-xl">
               <div className="flex items-center justify-between mb-4">
                 <button onClick={() => setActiveTab('voices')} className="flex items-center gap-2 bg-zinc-800/50 px-3 py-1.5 rounded-full border border-zinc-700 max-w-[60%]">
@@ -298,7 +243,7 @@ const App: React.FC = () => {
                   <ChevronRight size={14} className="text-zinc-500" />
                 </button>
                 <div className="flex gap-2">
-                  {languageProfile.hasUrdu && <span className="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">URDU</span>}
+                  {languageProfile.hasUrdu && <span className="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 uppercase">Urdu</span>}
                   <span className="text-[10px] text-zinc-500 font-bold uppercase">{text.length}/5000</span>
                 </div>
               </div>
@@ -310,8 +255,8 @@ const App: React.FC = () => {
                 className={`w-full h-44 bg-transparent text-zinc-100 placeholder:text-zinc-600 focus:outline-none text-lg leading-relaxed resize-none ${languageProfile.hasUrdu ? 'urdu-text' : ''}`}
               />
               <div className="flex gap-3 mt-4">
-                <button onClick={handleGenerate} disabled={isGenerating || !text.trim()} className="flex-1 flex items-center justify-center gap-2 py-4 rounded-xl font-bold bg-indigo-600 text-white disabled:bg-zinc-800 disabled:text-zinc-600 transition-all active:scale-95">
-                  {isGenerating ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <><Sparkles size={18} /> Generate Voice</>}
+                <button onClick={handleGenerate} disabled={isGenerating || !text.trim() || activeQuota >= QUOTA_LIMIT} className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-xl font-bold transition-all active:scale-95 ${isGenerating || activeQuota >= QUOTA_LIMIT ? 'bg-zinc-800 text-zinc-500' : 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20'}`}>
+                  {isGenerating ? <div className="w-5 h-5 border-2 border-zinc-600 border-t-indigo-500 rounded-full animate-spin" /> : activeQuota >= QUOTA_LIMIT ? <><AlertTriangle size={18} /> Quota Full</> : <><Sparkles size={18} /> Generate Voice</>}
                 </button>
               </div>
             </div>
@@ -326,11 +271,11 @@ const App: React.FC = () => {
               <p className="text-sm text-zinc-400">Record 15s sample for cloning.</p>
             </div>
             
-            <div className="bg-zinc-900/50 rounded-2xl border border-zinc-800 p-6 space-y-6">
+            <div className="bg-zinc-900/50 rounded-2xl border border-zinc-800 p-6 space-y-6 shadow-xl">
               <input type="text" value={cloningName} onChange={(e) => setCloningName(e.target.value)} placeholder="Voice Name" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-100 focus:border-indigo-500 outline-none" />
               
               <div className="grid grid-cols-2 gap-3">
-                <button onClick={isRecording ? stopRecording : startRecording} className={`flex flex-col items-center justify-center p-6 rounded-2xl border-2 transition-all gap-2 ${isRecording ? 'bg-red-500/10 border-red-500 animate-pulse' : 'bg-zinc-950/40 border-zinc-800'}`}>
+                <button onClick={isRecording ? () => { if(mediaRecorderRef.current) mediaRecorderRef.current.stop(); setIsRecording(false); if(timerRef.current) clearInterval(timerRef.current); } : async () => { setAudioURL(null); setCloningFile(null); try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); const mediaRecorder = new MediaRecorder(stream); mediaRecorderRef.current = mediaRecorder; audioChunksRef.current = []; mediaRecorder.ondataavailable = (e) => { if(e.data.size > 0) audioChunksRef.current.push(e.data); }; mediaRecorder.onstop = () => { const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' }); const file = new File([audioBlob], "recorded_voice.wav", { type: 'audio/wav' }); setCloningFile(file); setAudioURL(URL.createObjectURL(audioBlob)); stream.getTracks().forEach(t => t.stop()); }; mediaRecorder.start(); setIsRecording(true); setRecordingTime(0); timerRef.current = window.setInterval(() => setRecordingTime(p => p + 1), 1000); } catch(e) { alert("Mic Access Denied."); } }} className={`flex flex-col items-center justify-center p-6 rounded-2xl border-2 transition-all gap-2 ${isRecording ? 'bg-red-500/10 border-red-500 animate-pulse' : 'bg-zinc-950/40 border-zinc-800'}`}>
                   {isRecording ? <CircleStop size={32} className="text-red-500" /> : <Mic2 size={32} className="text-zinc-500" />}
                   <span className="text-xs font-bold">{isRecording ? `Recording ${recordingTime}s` : 'Record Now'}</span>
                 </button>
@@ -346,12 +291,7 @@ const App: React.FC = () => {
 
               {audioURL && !isRecording && (
                 <div className="bg-zinc-950/60 rounded-xl border border-zinc-800 p-4 flex items-center gap-4">
-                  <button onClick={() => {
-                    if (labPreviewRef.current) {
-                      if (isPreviewPlaying) labPreviewRef.current.pause();
-                      else { labPreviewRef.current.src = audioURL!; labPreviewRef.current.play(); }
-                    }
-                  }} className="w-10 h-10 flex items-center justify-center bg-indigo-600 rounded-lg text-white">
+                  <button onClick={() => { if (labPreviewRef.current) { if (isPreviewPlaying) labPreviewRef.current.pause(); else { labPreviewRef.current.src = audioURL!; labPreviewRef.current.play(); } } }} className="w-10 h-10 flex items-center justify-center bg-indigo-600 rounded-lg text-white">
                     {isPreviewPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
                   </button>
                   <div className="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
@@ -367,7 +307,7 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              <button onClick={handleCloneVoice} disabled={!cloningName || !cloningFile || isCloning} className="w-full py-4 rounded-xl font-bold bg-indigo-600 text-white disabled:bg-zinc-800 disabled:text-zinc-600 active:scale-95 transition-all">
+              <button onClick={async () => { if (!cloningName || !cloningFile) return; setIsCloning(true); setCloningProgress(0); const steps = ["Analyzing", "Mapping", "Cloning", "Saving"]; const interval = setInterval(() => setCloningProgress(p => { const next = Math.min(p + 2.5, 99); const stepIdx = Math.floor((next / 100) * steps.length); setCloningStep(steps[stepIdx]); return next; }), 100); try { const reader = new FileReader(); reader.onload = async (e) => { const base64 = e.target?.result as string; await new Promise(r => setTimeout(r, 1500)); const newVoice: Voice = { id: `custom-${Date.now()}`, name: cloningName, previewUrl: '', category: 'Custom', tags: ['Neural'], geminiVoice: 'Kore', description: 'Personalized voice signature.', isCustom: true, sampleData: base64, sampleMimeType: cloningFile.type }; setCustomVoices(p => [newVoice, ...p]); setSelectedVoice(newVoice); clearInterval(interval); setIsCloning(false); setActiveTab('create'); }; reader.readAsDataURL(cloningFile); } catch (e) { clearInterval(interval); setIsCloning(false); } }} disabled={!cloningName || !cloningFile || isCloning} className="w-full py-4 rounded-xl font-bold bg-indigo-600 text-white disabled:bg-zinc-800 disabled:text-zinc-600 active:scale-95 transition-all">
                 {isCloning ? 'Synthesizing Neural Map...' : 'Clone My Voice'}
               </button>
             </div>
@@ -396,18 +336,11 @@ const App: React.FC = () => {
                  <div key={item.id} className="p-4 bg-zinc-900/50 rounded-xl border border-zinc-800 flex justify-between items-center">
                    <div className="flex-1 min-w-0 pr-4">
                      <p className="text-[10px] font-bold text-zinc-500 uppercase mb-1">{item.voiceName} • {new Date(item.timestamp).toLocaleTimeString()}</p>
-                     <p className="text-sm text-zinc-300 truncate">"{item.text}"</p>
+                     <p className="text-sm text-zinc-300 truncate italic">"{item.text}"</p>
                    </div>
                    <div className="flex gap-2">
-                      <button onClick={async () => {
-                         const wavBlob = pcmToWav(item.audioData, 24000);
-                         const url = URL.createObjectURL(wavBlob);
-                         if (audioInstanceRef.current) { audioInstanceRef.current.src = url; audioInstanceRef.current.play(); }
-                      }} className="p-2 bg-zinc-800 rounded-lg text-indigo-400 active:bg-zinc-700 transition-colors"><Play size={16} /></button>
-                      
-                      <button onClick={() => handleShareAudio(item.audioData, item.text)} className="p-2 bg-zinc-800 rounded-lg text-zinc-400 active:bg-zinc-700 transition-colors">
-                        <Share2 size={16} />
-                      </button>
+                      <button onClick={async () => { const wavBlob = pcmToWav(item.audioData, 24000); const url = URL.createObjectURL(wavBlob); if (audioInstanceRef.current) { audioInstanceRef.current.src = url; audioInstanceRef.current.play(); } }} className="p-2 bg-zinc-800 rounded-lg text-indigo-400 active:bg-zinc-700 transition-colors"><Play size={16} /></button>
+                      <button onClick={() => handleShareAudio(item.audioData, item.text)} className="p-2 bg-zinc-800 rounded-lg text-zinc-400 active:bg-zinc-700 transition-colors"><Share2 size={16} /></button>
                    </div>
                  </div>
                ))
@@ -423,7 +356,7 @@ const App: React.FC = () => {
                <Slider label="Clarity" value={settings.similarity} min={0} max={100} onChange={v => setSettings({...settings, similarity: v})} />
                <div className="pt-6 border-t border-zinc-800 flex items-center gap-4">
                  <div className="w-10 h-10 bg-indigo-500/10 rounded-lg flex items-center justify-center text-indigo-500"><Cpu size={24} /></div>
-                 <div><p className="text-[10px] font-bold text-zinc-500 uppercase">Engine Ready</p><p className="text-sm font-bold">Neural Engine v2.5 Online</p></div>
+                 <div><p className="text-[10px] font-bold text-zinc-500 uppercase">Engine Status</p><p className="text-sm font-bold">Neural Core v2.5 Active</p></div>
                </div>
              </div>
           </div>
@@ -433,9 +366,20 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden select-none">
-      <header className="px-6 py-4 flex items-center justify-between border-b border-zinc-900 bg-zinc-950/50 backdrop-blur-md z-10">
-        <div className="flex items-center gap-2"><div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center font-black text-sm">NT</div><h1 className="font-bold tracking-tight">NeuralTalk</h1></div>
-        <div className="bg-emerald-500/10 px-2 py-1 rounded text-[10px] font-black text-emerald-500 uppercase tracking-widest border border-emerald-500/20">Active</div>
+      <header className="px-6 py-4 flex items-center justify-between border-b border-zinc-900 bg-zinc-950/80 backdrop-blur-md z-10 sticky top-0">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center font-black text-sm shadow-lg shadow-indigo-600/30">NT</div>
+          <h1 className="font-bold tracking-tight">NeuralTalk</h1>
+        </div>
+        
+        {/* Dynamic Quota Badge */}
+        <div className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border transition-colors duration-500 ${
+          activeQuota >= 9 ? 'bg-red-500/10 text-red-500 border-red-500/30' :
+          activeQuota >= 6 ? 'bg-amber-500/10 text-amber-500 border-amber-500/30' :
+          'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
+        }`}>
+          Quota: {activeQuota}/{QUOTA_LIMIT}
+        </div>
       </header>
       
       <main className="flex-1 overflow-y-auto custom-scrollbar px-5 pt-6 pb-40">
@@ -444,23 +388,23 @@ const App: React.FC = () => {
 
       {currentAudio && (
         <div className="fixed bottom-24 left-4 right-4 bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-4 flex items-center gap-4 z-40 animate-in slide-in-from-bottom-10">
-          <button onClick={() => isPlaying ? audioInstanceRef.current?.pause() : audioInstanceRef.current?.play()} className="p-3 bg-indigo-600 rounded-xl active:scale-95 transition-all">
+          <button onClick={() => isPlaying ? audioInstanceRef.current?.pause() : audioInstanceRef.current?.play()} className="p-3 bg-indigo-600 rounded-xl active:scale-95 transition-all shadow-lg shadow-indigo-600/20">
             {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
           </button>
           <div className="flex-1 truncate">
-            <p className="text-[10px] font-bold text-indigo-400 uppercase">Signal Ready</p>
-            <p className="text-sm font-bold text-zinc-300 truncate">Audio Processed</p>
+            <p className="text-[10px] font-bold text-indigo-400 uppercase">Processed Signal</p>
+            <p className="text-sm font-bold text-zinc-300 truncate">Audio Ready to Play</p>
           </div>
-          <button onClick={() => handleShareAudio(currentAudio.audioData, "NeuralTalk Output")} className="p-2 text-zinc-400">
+          <button onClick={() => handleShareAudio(currentAudio.audioData, "NeuralTalk Output")} className="p-2 text-zinc-400 hover:text-zinc-200">
             <Share2 size={20} />
           </button>
-          <button onClick={() => setCurrentAudio(null)} className="p-2 text-zinc-600">
+          <button onClick={() => setCurrentAudio(null)} className="p-2 text-zinc-600 hover:text-zinc-400">
             <X size={20} />
           </button>
         </div>
       )}
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-zinc-950/90 backdrop-blur-xl border-t border-zinc-900 px-4 py-3 flex justify-around items-center pb-[max(12px,env(safe-area-inset-bottom))] shadow-2xl">
+      <nav className="fixed bottom-0 left-0 right-0 bg-zinc-950/90 backdrop-blur-xl border-t border-zinc-900 px-4 py-3 flex justify-around items-center pb-[max(12px,env(safe-area-inset-bottom))] shadow-2xl z-50">
         <NavBtn act={activeTab === 'create'} icon={<Home size={22} />} lab="Studio" onClick={() => setActiveTab('create')} />
         <NavBtn act={activeTab === 'voices'} icon={<Layers size={22} />} lab="Library" onClick={() => setActiveTab('voices')} />
         <NavBtn act={activeTab === 'lab'} icon={<FlaskConical size={22} />} lab="Lab" onClick={() => setActiveTab('lab')} />
@@ -472,7 +416,7 @@ const App: React.FC = () => {
 };
 
 const NavBtn: React.FC<{ act: boolean; icon: any; lab: string; onClick: () => void }> = ({ act, icon, lab, onClick }) => (
-  <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all active:scale-110 ${act ? 'text-indigo-500' : 'text-zinc-600 hover:text-zinc-400'}`}>
+  <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all active:scale-110 ${act ? 'text-indigo-500 scale-105' : 'text-zinc-600 hover:text-zinc-400'}`}>
     {icon}<span className="text-[9px] font-bold uppercase tracking-tight">{lab}</span>
   </button>
 );
